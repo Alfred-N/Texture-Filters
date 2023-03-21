@@ -1,5 +1,5 @@
-# Trollcraft
-Data _ spel
+# K-means filter for stylizing image textures
+![example image](https://github.com/Alfred-N/Texture-Filters/blob/9c5e78784ca8d99f97de5b67e5be335b0c587953/example_comp.jpg)
 
 ## Install Conda env
 `conda env create -f environment.yml`
