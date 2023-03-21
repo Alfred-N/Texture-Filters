@@ -1,0 +1,10 @@
+name: Filters
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python
+  - numpy
+  - matplotlib
+  - scikit-learn
+  - opencv
