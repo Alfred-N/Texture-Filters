@@ -45,7 +45,7 @@ def kmeans_faiss(
         num_clusters,
         niter=max_iter,
         nredo=n_init,
-        verbose=True,
+        verbose=False,
         gpu=gpu,
         seed=random_state,
     )
@@ -60,7 +60,7 @@ def kmeans_faiss(
     centroids = kmeans.centroids
 
     # Assign each instance to a centroid
-    D, I = kmeans.index.search(img_pixels.astype(np.float32), 1)
+    _, I = kmeans.index.search(img_pixels.astype(np.float32), 1)
 
     # Count the number of instances belonging to each centroid
     counts = np.bincount(I.reshape(-1), minlength=num_clusters)
@@ -70,7 +70,7 @@ def kmeans_faiss(
     return top_colors
 
 
-# @time_it
+@time_it
 def get_topk_colors_kmeans(
     img_np,
     k,
@@ -385,7 +385,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--engine",
         choices=["faiss", "sklearn"],
-        default="faiss",
+        default="sklearn",
         help="The clustering engine to use",
     )
 
