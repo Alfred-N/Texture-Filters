@@ -127,6 +127,8 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+.vscode/
 out.jpg
 comparison.jpg
 outputs
+test_images
