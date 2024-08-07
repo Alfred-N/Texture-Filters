@@ -5,6 +5,9 @@ import argparse
 import time
 from sklearn.cluster import KMeans
 import faiss
+import platform
+import subprocess
+import os
 
 LUMINANCE_COEFFS = np.array([0.2126, 0.7152, 0.0722])
 
@@ -224,9 +227,48 @@ def plot_filtered_and_original(
     plt.savefig(savepath)
 
 
+def convert_exr_to_png(exr_path):
+    if platform.system() == "Darwin":  # Check if OS is macOS
+        png_path = exr_path.replace(".exr", ".png")
+        command = ["sips", "-s", "format", "png", exr_path, "--out", png_path]
+        try:
+            subprocess.run(command, check=True)
+            print(f"Converted {exr_path} to {png_path}")
+            return png_path
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"Failed to convert EXR to PNG: {e}")
+    else:
+        raise NotImplementedError("EXR format is only supported on macOS using sips.")
+
+
+def convert_png_to_exr(png_path):
+    if platform.system() == "Darwin":  # Check if OS is macOS
+        exr_path = png_path.replace(".png", ".exr")
+        command = ["sips", "-s", "format", "exr", png_path, "--out", exr_path]
+        try:
+            subprocess.run(command, check=True)
+            print(f"Converted {png_path} to {exr_path}")
+            return exr_path
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"Failed to convert PNG to EXR: {e}")
+    else:
+        raise NotImplementedError(
+            "PNG to EXR conversion is only supported on macOS using sips."
+        )
+
+
+def load_image(input_path):
+    if input_path.endswith(".exr"):
+        input_path = convert_exr_to_png(input_path)
+    img_np = cv2.imread(input_path)
+    if img_np is None:
+        raise ValueError(f"Failed to load image from {input_path}")
+    return img_np, input_path
+
+
 def main(
     input_path,
-    output_path,
+    output_path=None,
     ref_path=None,
     n_colors=4,
     num_clusters=100,
@@ -241,14 +283,26 @@ def main(
     # Sanity checks
     assert not (gpu and engine == "sklearn"), "Only faiss is compatible with gpu"
 
-    # Read the image using OpenCV
-    img = cv2.imread(input_path)
-    img_np = np.array(img)
+    # Load the input image, converting if necessary
+    img_np, converted_input_path = load_image(input_path)
+    input_is_exr = input_path.endswith(".exr")
+
     if ref_path is not None:
-        ref_img = cv2.imread(ref_path)
-        ref_np = np.array(ref_img)
+        ref_np, _ = load_image(ref_path)
     else:
         ref_np = None
+
+    # If output path is not specified, generate one
+    if output_path is None:
+        base_name = os.path.splitext(os.path.basename(input_path))[0]
+        output_extension = ".exr" if input_is_exr else ".png"
+        output_path = os.path.join(
+            os.path.dirname(input_path), f"{base_name}_stylized{output_extension}"
+        )
+    else:
+        # Ensure correct extension for EXR output
+        if input_is_exr and not output_path.endswith(".exr"):
+            output_path = output_path.replace(".jpg", ".exr").replace(".png", ".exr")
 
     print("K-means clustering input image ...")
     top_k_colors = get_topk_colors_kmeans(
@@ -260,7 +314,7 @@ def main(
         gpu=gpu,
         n_init=n_init,
     )
-    result_np, nearest_colors_inds_orig = round_img_to_colors(img, top_k_colors)
+    result_np, nearest_colors_inds_orig = round_img_to_colors(img_np, top_k_colors)
     if ref_path is not None:
         print("K-means clustering reference image ...")
         top_k_colors_ref = get_topk_colors_kmeans(
@@ -281,8 +335,18 @@ def main(
 
     result_np = downsample_image(result_np, downsample_ratio)
 
-    cv2.imwrite(output_path, result_np)
-    print(f"Result saved to {output_path}")
+    # Save the output image
+    output_png_path = (
+        output_path
+        if output_path.endswith(".png")
+        else output_path.replace(".exr", ".png")
+    )
+    cv2.imwrite(output_png_path, result_np)
+    print(f"Result saved to {output_png_path}")
+
+    # Convert back to EXR if necessary
+    if input_is_exr:
+        output_path = convert_png_to_exr(output_png_path)
 
     if plot_comparison:
         savepath_comparison = "comparison.jpg"
@@ -319,8 +383,7 @@ if __name__ == "__main__":
         "-o",
         "--output_path",
         type=str,
-        required=True,
-        help="Path to save the output image file.",
+        help="Path to save the output image file. If not specified, the output will be saved as <input_name>_stylized.[png|exr]",
     )
 
     parser.add_argument(
