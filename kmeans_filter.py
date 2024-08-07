@@ -266,6 +266,73 @@ def load_image(input_path):
     return img_np, input_path
 
 
+def apply_bilateral_filter(img_np, d=15, sigma_color=75, sigma_space=75):
+    return cv2.bilateralFilter(img_np, d, sigma_color, sigma_space)
+
+
+def apply_median_filter(img_np, ksize=5):
+    return cv2.medianBlur(img_np, ksize)
+
+
+def apply_gaussian_blur_and_edges(
+    img_np, blur_ksize=7, canny_threshold1=50, canny_threshold2=150
+):
+    blurred_img = cv2.GaussianBlur(img_np, (blur_ksize, blur_ksize), 0)
+    edges = cv2.Canny(blurred_img, canny_threshold1, canny_threshold2)
+    edges_colored = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
+    return cv2.bitwise_and(blurred_img, edges_colored)
+
+
+def apply_cartoon_effect(img_np):
+    # Apply bilateral filter to smooth the image
+    img_color = cv2.bilateralFilter(img_np, d=9, sigmaColor=75, sigmaSpace=75)
+
+    # Convert to grayscale and apply a median blur
+    img_gray = cv2.cvtColor(img_np, cv2.COLOR_BGR2GRAY)
+    img_blur = cv2.medianBlur(img_gray, 7)
+
+    # Detect edges using adaptive thresholding
+    img_edges = cv2.adaptiveThreshold(
+        img_blur, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, blockSize=9, C=2
+    )
+
+    # Convert back to color, bitwise AND with color image
+    img_edges_colored = cv2.cvtColor(img_edges, cv2.COLOR_GRAY2BGR)
+    img_cartoon = cv2.bitwise_and(img_color, img_edges_colored)
+
+    return img_cartoon
+
+
+def apply_cartoon_effect_v2(img_np):
+    # Step 1: Apply a stronger bilateral filter to smooth the image while preserving edges
+    img_color = cv2.bilateralFilter(img_np, d=15, sigmaColor=100, sigmaSpace=100)
+
+    # Step 2: Convert to grayscale and apply a median blur to reduce noise
+    img_gray = cv2.cvtColor(img_np, cv2.COLOR_BGR2GRAY)
+    img_blur = cv2.medianBlur(img_gray, 7)
+
+    # Step 3: Detect edges using adaptive thresholding
+    img_edges = cv2.adaptiveThreshold(
+        img_blur, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, blockSize=9, C=2
+    )
+
+    # Step 4: Smooth the edges slightly to make them less distinct
+    edges_blur = cv2.GaussianBlur(img_edges, (3, 3), 0)
+
+    # Step 5: Convert the edges to a 3-channel image
+    edges_colored = cv2.cvtColor(edges_blur, cv2.COLOR_GRAY2BGR)
+
+    # Step 6: Further smooth the color image to emphasize homogeneity
+    img_color_smoothed = cv2.bilateralFilter(
+        img_color, d=25, sigmaColor=150, sigmaSpace=150
+    )
+
+    # Step 7: Combine the smooth color image with the edges using weighted addition
+    img_cartoon = cv2.addWeighted(img_color_smoothed, 0.9, edges_colored, 0.1, 0)
+
+    return img_cartoon
+
+
 def main(
     input_path,
     output_path=None,
@@ -279,6 +346,7 @@ def main(
     engine="sklearn",
     gpu=False,
     n_init=1,
+    post_process=None,  # New argument to choose the post-processing function
 ):
     # Sanity checks
     assert not (gpu and engine == "sklearn"), "Only faiss is compatible with gpu"
@@ -334,6 +402,21 @@ def main(
         )
 
     result_np = downsample_image(result_np, downsample_ratio)
+
+    # Apply the chosen post-processing function if provided
+    if post_process:
+        if post_process == "bilateral":
+            result_np = apply_bilateral_filter(result_np)
+        elif post_process == "median":
+            result_np = apply_median_filter(result_np)
+        elif post_process == "gaussian_edges":
+            result_np = apply_gaussian_blur_and_edges(result_np)
+        elif post_process == "cartoon":
+            result_np = apply_cartoon_effect(result_np)
+        elif post_process == "cartoon2":
+            result_np = apply_cartoon_effect_v2(result_np)
+        else:
+            raise ValueError(f"Unknown post-processing option: {post_process}")
 
     # Save the output image
     output_png_path = (
@@ -458,6 +541,12 @@ if __name__ == "__main__":
         help='Use gpu for kmeans clustering. Only compatible with engine="faiss"',
     )
 
+    parser.add_argument(
+        "--post_process",
+        choices=["bilateral", "median", "gaussian_edges", "cartoon", "cartoon2"],
+        help="Choose a post-processing effect to apply to the final image.",
+    )
+
     args = parser.parse_args()
 
     main(
@@ -473,4 +562,5 @@ if __name__ == "__main__":
         engine=args.engine,
         gpu=args.gpu,
         n_init=args.n_random,
+        post_process=args.post_process,  # Pass the post-process option
     )
