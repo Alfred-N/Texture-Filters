@@ -306,15 +306,20 @@ def apply_cartoon_effect_v2(img_np):
     return img_cartoon
 
 
-def gaussian(x, sigma):
-    return np.exp(-(x**2) / (2 * sigma**2)) / (np.sqrt(2 * np.pi) * sigma)
+def taylor_exp(x):
+    """Taylor series approximation of exp(x) up to the 3rd degree."""
+    return 1 + x + (x**2)/2 + (x**3)/6
 
+def gaussian(x, sigma):
+    """Gaussian function with Taylor series approximation for the exponential."""
+    taylor_x = -(x ** 2) / (2 * sigma ** 2)
+    return taylor_exp(taylor_x) / (np.sqrt(2 * np.pi) * sigma)
 
 def compute_structure_tensor(image):
     # Convert to grayscale if the image is multi-channel (RGB)
     if len(image.shape) == 3:
         image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
+    
     Sx = cv2.Sobel(image, cv2.CV_64F, 1, 0, ksize=3)
     Sy = cv2.Sobel(image, cv2.CV_64F, 0, 1, ksize=3)
     Sxx = Sx * Sx
@@ -322,69 +327,57 @@ def compute_structure_tensor(image):
     Sxy = Sx * Sy
     return Sxx, Syy, Sxy
 
-
-def anisotropic_kuwahara_filter(
-    image, kernel_size=5, alpha=1.0, blur_radius=2, zero_crossing=0.58
-):
+def anisotropic_kuwahara_filter(image, kernel_size=5, alpha=1.0, blur_radius=2, zero_crossing=0.58):
     height, width = image.shape[:2]
-
+    
     # Compute structure tensor
     Sxx, Syy, Sxy = compute_structure_tensor(image)
-
+    
     # Gaussian blur the structure tensor
-    Sxx_blur = cv2.GaussianBlur(Sxx, (blur_radius * 2 + 1, blur_radius * 2 + 1), 0)
-    Syy_blur = cv2.GaussianBlur(Syy, (blur_radius * 2 + 1, blur_radius * 2 + 1), 0)
-    Sxy_blur = cv2.GaussianBlur(Sxy, (blur_radius * 2 + 1, blur_radius * 2 + 1), 0)
-
+    Sxx_blur = cv2.GaussianBlur(Sxx, (blur_radius*2+1, blur_radius*2+1), 0)
+    Syy_blur = cv2.GaussianBlur(Syy, (blur_radius*2+1, blur_radius*2+1), 0)
+    Sxy_blur = cv2.GaussianBlur(Sxy, (blur_radius*2+1, blur_radius*2+1), 0)
+    
     # Compute anisotropy
-    lambda1 = 0.5 * (
-        Sxx_blur + Syy_blur + np.sqrt((Sxx_blur - Syy_blur) ** 2 + 4 * Sxy_blur**2)
-    )
-    lambda2 = 0.5 * (
-        Sxx_blur + Syy_blur - np.sqrt((Sxx_blur - Syy_blur) ** 2 + 4 * Sxy_blur**2)
-    )
-
-    with np.errstate(divide="ignore", invalid="ignore"):
-        A = np.divide(
-            lambda1 - lambda2, lambda1 + lambda2, where=(lambda1 + lambda2) != 0
-        )
+    lambda1 = 0.5 * (Sxx_blur + Syy_blur + np.sqrt((Sxx_blur - Syy_blur) ** 2 + 4 * Sxy_blur ** 2))
+    lambda2 = 0.5 * (Sxx_blur + Syy_blur - np.sqrt((Sxx_blur - Syy_blur) ** 2 + 4 * Sxy_blur ** 2))
+    
+    with np.errstate(divide='ignore', invalid='ignore'):
+        A = np.divide(lambda1 - lambda2, lambda1 + lambda2, where=(lambda1 + lambda2) != 0)
         A = np.nan_to_num(A, nan=0.0)
 
     phi = 0.5 * np.arctan2(2 * Sxy_blur, Sxx_blur - Syy_blur)
-
+    
     result = np.zeros_like(image, dtype=np.float64)
+    
+    max_radius = kernel_size // 2
+    y_indices, x_indices = np.meshgrid(np.arange(-max_radius, max_radius + 1), np.arange(-max_radius, max_radius + 1), indexing='ij')
+    v = np.stack([y_indices.ravel(), x_indices.ravel()], axis=-1)
 
-    # Add a tqdm progress bar around the outer loop
     for y in tqdm(range(height), desc="Applying Anisotropic Kuwahara Filter"):
         for x in range(width):
-            max_radius = int(kernel_size / 2)
-            region_values = []
             phi_value = phi[y, x]
             cos_phi = np.cos(phi_value)
             sin_phi = np.sin(phi_value)
             R = np.array([[cos_phi, -sin_phi], [sin_phi, cos_phi]])
-
-            # Ensure A[y, x] is treated as a scalar
+            
             A_value = A[y, x]
             a = max_radius * np.clip((alpha + A_value) / alpha, 0.1, 2.0)
             b = max_radius * np.clip(alpha / (alpha + A_value), 0.1, 2.0)
-
+            
             S = np.array([[0.5 / a, 0], [0, 0.5 / b]])
             SR = S @ R
-            for i in range(-max_radius, max_radius + 1):
-                for j in range(-max_radius, max_radius + 1):
-                    v = np.array([i, j], dtype=float)
-                    v_transformed = SR @ v
-                    if np.linalg.norm(v_transformed) <= 0.5:
-                        xi = np.clip(x + j, 0, width - 1)
-                        yi = np.clip(y + i, 0, height - 1)
-                        region_values.append(image[yi, xi])
 
-            region_values = np.array(region_values)
-            if region_values.size > 0:
-                mean_value = np.mean(region_values, axis=0)
-                result[y, x] = mean_value
+            v_transformed = np.dot(v, SR.T)
+            inside_mask = np.linalg.norm(v_transformed, axis=1) <= 0.5
+            
+            y_offsets = np.clip(y + y_indices.ravel()[inside_mask], 0, height - 1)
+            x_offsets = np.clip(x + x_indices.ravel()[inside_mask], 0, width - 1)
 
+            region_values = image[y_offsets, x_offsets]
+            mean_value = np.mean(region_values, axis=0)
+            result[y, x] = mean_value
+    
     return np.clip(result, 0, 255).astype(np.uint8)
 
 
