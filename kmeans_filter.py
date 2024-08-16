@@ -68,7 +68,6 @@ def kmeans_faiss(
     # Count the number of instances belonging to each centroid
     counts = np.bincount(I.reshape(-1), minlength=num_clusters)
     centroids_sorted = centroids[np.argsort(-counts)]
-    # top_colors = centroids[:k]
     top_colors = centroids_sorted[:k]
     return top_colors
 
@@ -138,33 +137,18 @@ def pairwise_distances(color_set1, color_set2):
 
 
 def find_closest_color_indices(color_set1, dist_matrix):
-    # Flatten the distance matrix
     flat_dist_matrix = dist_matrix.flatten()
-
-    # Sort and argsort the flattened distance matrix
     sorted_indices = np.argsort(flat_dist_matrix)
-    # sorted_distances = flat_dist_matrix[sorted_indices]
-
-    # Create arrays to store the closest matching indices and available indices
     closest_indices = np.full(color_set1.shape[0], -1)
     available_indices = np.arange(color_set1.shape[0])
 
-    # Loop through the distances from smallest to largest
     for i in range(len(sorted_indices)):
-        # Get the indices of the colors in color_set1 and color_set2
         set1_index, set2_index = np.unravel_index(sorted_indices[i], dist_matrix.shape)
-
-        # Check if the closest color in color_set1 is available
         if set1_index in available_indices:
-            # Assign the closest index to the color in color_set2
             closest_indices[set1_index] = set2_index
-
-            # Remove the closest index from the available indices
             available_indices = np.delete(
                 available_indices, np.where(available_indices == set1_index)
             )
-
-            # Stop looping if all indices have been used
             if len(available_indices) == 0:
                 break
 
@@ -183,8 +167,6 @@ def swap_colors(
         topk_colors_ref_lumin_adjusted = np.take(
             topk_colors_ref, closest_indices, axis=0
         )
-
-        # Replace each pixel with its nearest color
         img_swapped = topk_colors_ref_lumin_adjusted[nearest_colors_index_orig]
     else:
         img_swapped = topk_colors_ref[nearest_colors_index_orig]
@@ -202,23 +184,19 @@ def plot_filtered_and_original(
     else:
         gs = fig.add_gridspec(2, 2, width_ratios=[1, 1], height_ratios=[5, 1])
 
-    # Plot the original image on the left
     ax1 = fig.add_subplot(gs[0, 0])
     ax1.imshow(orig_np[:, :, ::-1].astype(np.uint8))
     ax1.set_title("Original Image")
 
-    # Plot the filtered image on the right
     ax2 = fig.add_subplot(gs[0, 1] if ref_np is not None else gs[0, 1])
     ax2.set_title("Rounded Image")
     ax2.imshow(filtered_np[:, :, ::-1].astype(np.uint8))
 
-    # If a reference image is provided, plot it in the center
     if ref_np is not None:
         ax3 = fig.add_subplot(gs[0, 2])
         ax3.imshow(ref_np[:, :, ::-1].astype(np.uint8))
         ax3.set_title("Reference Image")
 
-    # Plot the color palette below the images
     ax4 = fig.add_subplot(gs[1, :])
     ax4.set_title(f"Top {k} Colors")
     ax4.imshow(color_palette[:, :, ::-1].astype(np.uint8), aspect=1 / 5)
@@ -228,7 +206,7 @@ def plot_filtered_and_original(
 
 
 def convert_exr_to_png(exr_path):
-    if platform.system() == "Darwin":  # Check if OS is macOS
+    if platform.system() == "Darwin":
         png_path = exr_path.replace(".exr", ".png")
         command = ["sips", "-s", "format", "png", exr_path, "--out", png_path]
         try:
@@ -242,7 +220,7 @@ def convert_exr_to_png(exr_path):
 
 
 def convert_png_to_exr(png_path):
-    if platform.system() == "Darwin":  # Check if OS is macOS
+    if platform.system() == "Darwin":
         exr_path = png_path.replace(".png", ".exr")
         command = ["sips", "-s", "format", "exr", png_path, "--out", exr_path]
         try:
@@ -266,6 +244,20 @@ def load_image(input_path):
     return img_np, input_path
 
 
+def apply_smoothing(img_np, smoothing_type="gaussian", smoothing_strength=5):
+    if smoothing_type == "gaussian":
+        img_np = cv2.GaussianBlur(img_np, (smoothing_strength, smoothing_strength), 0)
+    elif smoothing_type == "bilateral":
+        img_np = cv2.bilateralFilter(
+            img_np, d=9, sigmaColor=smoothing_strength, sigmaSpace=smoothing_strength
+        )
+    elif smoothing_type == "median":
+        img_np = cv2.medianBlur(img_np, smoothing_strength)
+    else:
+        raise ValueError(f"Unknown smoothing type: {smoothing_type}")
+    return img_np
+
+
 def apply_bilateral_filter(img_np, d=15, sigma_color=75, sigma_space=75):
     return cv2.bilateralFilter(img_np, d, sigma_color, sigma_space)
 
@@ -284,19 +276,12 @@ def apply_gaussian_blur_and_edges(
 
 
 def apply_cartoon_effect(img_np):
-    # Apply bilateral filter to smooth the image
     img_color = cv2.bilateralFilter(img_np, d=9, sigmaColor=75, sigmaSpace=75)
-
-    # Convert to grayscale and apply a median blur
     img_gray = cv2.cvtColor(img_np, cv2.COLOR_BGR2GRAY)
     img_blur = cv2.medianBlur(img_gray, 7)
-
-    # Detect edges using adaptive thresholding
     img_edges = cv2.adaptiveThreshold(
         img_blur, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, blockSize=9, C=2
     )
-
-    # Convert back to color, bitwise AND with color image
     img_edges_colored = cv2.cvtColor(img_edges, cv2.COLOR_GRAY2BGR)
     img_cartoon = cv2.bitwise_and(img_color, img_edges_colored)
 
@@ -304,30 +289,17 @@ def apply_cartoon_effect(img_np):
 
 
 def apply_cartoon_effect_v2(img_np):
-    # Step 1: Apply a stronger bilateral filter to smooth the image while preserving edges
     img_color = cv2.bilateralFilter(img_np, d=15, sigmaColor=100, sigmaSpace=100)
-
-    # Step 2: Convert to grayscale and apply a median blur to reduce noise
     img_gray = cv2.cvtColor(img_np, cv2.COLOR_BGR2GRAY)
     img_blur = cv2.medianBlur(img_gray, 7)
-
-    # Step 3: Detect edges using adaptive thresholding
     img_edges = cv2.adaptiveThreshold(
         img_blur, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, blockSize=9, C=2
     )
-
-    # Step 4: Smooth the edges slightly to make them less distinct
     edges_blur = cv2.GaussianBlur(img_edges, (3, 3), 0)
-
-    # Step 5: Convert the edges to a 3-channel image
     edges_colored = cv2.cvtColor(edges_blur, cv2.COLOR_GRAY2BGR)
-
-    # Step 6: Further smooth the color image to emphasize homogeneity
     img_color_smoothed = cv2.bilateralFilter(
         img_color, d=25, sigmaColor=150, sigmaSpace=150
     )
-
-    # Step 7: Combine the smooth color image with the edges using weighted addition
     img_cartoon = cv2.addWeighted(img_color_smoothed, 0.9, edges_colored, 0.1, 0)
 
     return img_cartoon
@@ -346,7 +318,9 @@ def main(
     engine="sklearn",
     gpu=False,
     n_init=1,
-    post_process=None,  # New argument to choose the post-processing function
+    smoothing_type=None,  # New argument to choose the smoothing type
+    smoothing_strength=5,  # New argument to set the smoothing strength
+    post_process=None,  # Argument to choose the post-processing function
 ):
     # Sanity checks
     assert not (gpu and engine == "sklearn"), "Only faiss is compatible with gpu"
@@ -360,6 +334,9 @@ def main(
     else:
         ref_np = None
 
+    if smoothing_type:
+        img_np = apply_smoothing(img_np, smoothing_type, smoothing_strength)
+
     # If output path is not specified, generate one
     if output_path is None:
         base_name = os.path.splitext(os.path.basename(input_path))[0]
@@ -368,7 +345,6 @@ def main(
             os.path.dirname(input_path), f"{base_name}_stylized{output_extension}"
         )
     else:
-        # Ensure correct extension for EXR output
         if input_is_exr and not output_path.endswith(".exr"):
             output_path = output_path.replace(".jpg", ".exr").replace(".png", ".exr")
 
@@ -403,7 +379,6 @@ def main(
 
     result_np = downsample_image(result_np, downsample_ratio)
 
-    # Apply the chosen post-processing function if provided
     if post_process:
         if post_process == "bilateral":
             result_np = apply_bilateral_filter(result_np)
@@ -418,7 +393,6 @@ def main(
         else:
             raise ValueError(f"Unknown post-processing option: {post_process}")
 
-    # Save the output image
     output_png_path = (
         output_path
         if output_path.endswith(".png")
@@ -427,7 +401,6 @@ def main(
     cv2.imwrite(output_png_path, result_np)
     print(f"Result saved to {output_png_path}")
 
-    # Convert back to EXR if necessary
     if input_is_exr:
         output_path = convert_png_to_exr(output_png_path)
 
@@ -542,6 +515,19 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
+        "--smoothing_type",
+        choices=["gaussian", "bilateral", "median"],
+        help="Choose the type of smoothing to apply before processing.",
+    )
+
+    parser.add_argument(
+        "--smoothing_strength",
+        type=int,
+        default=5,
+        help="Set the strength of the smoothing (kernel size, sigma, etc.).",
+    )
+
+    parser.add_argument(
         "--post_process",
         choices=["bilateral", "median", "gaussian_edges", "cartoon", "cartoon2"],
         help="Choose a post-processing effect to apply to the final image.",
@@ -562,5 +548,7 @@ if __name__ == "__main__":
         engine=args.engine,
         gpu=args.gpu,
         n_init=args.n_random,
-        post_process=args.post_process,  # Pass the post-process option
+        smoothing_type=args.smoothing_type,
+        smoothing_strength=args.smoothing_strength,
+        post_process=args.post_process,
     )
