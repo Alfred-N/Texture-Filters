@@ -12,6 +12,10 @@ def apply_kuwahara_filter(
     sharpness=0.5,
     eccentricity=1.0,
 ):
+    # Ensure the file exists
+    if not os.path.exists(input_image_path):
+        raise ValueError(f"File not found: {input_image_path}")
+
     # Automatically generate the output file name
     input_dir, input_filename = os.path.split(input_image_path)
     filename, ext = os.path.splitext(input_filename)
@@ -30,7 +34,18 @@ def apply_kuwahara_filter(
 
     # Create the image input node
     image_node = tree.nodes.new(type="CompositorNodeImage")
-    image_node.image = bpy.data.images.load(input_image_path)
+    try:
+        image_node.image = bpy.data.images.load(input_image_path)
+    except RuntimeError:
+        raise ValueError(f"File format is not supported: {input_image_path}")
+
+    # Get the resolution of the input image
+    width, height = image_node.image.size
+
+    # Set the render resolution to match the input image
+    bpy.context.scene.render.resolution_x = width
+    bpy.context.scene.render.resolution_y = height
+    bpy.context.scene.render.resolution_percentage = 100
 
     # Create the Kuwahara node
     kuwahara_node = tree.nodes.new(type="CompositorNodeKuwahara")
