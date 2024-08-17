@@ -82,13 +82,13 @@ if __name__ == "__main__":
         "--use_high_precision", action="store_true", help="Use high precision mode"
     )
     parser.add_argument(
-        "--uniformity", type=int, default=1, help="Uniformity of filter direction"
+        "--uniformity", type=int, default=2, help="Uniformity of filter direction"
     )
     parser.add_argument(
-        "--sharpness", type=float, default=0.5, help="Sharpness of the filter"
+        "--sharpness", type=float, default=0.7, help="Sharpness of the filter"
     )
     parser.add_argument(
-        "--eccentricity", type=float, default=1.0, help="Eccentricity of the filter"
+        "--eccentricity", type=float, default=1.5, help="Eccentricity of the filter"
     )
 
     args = parser.parse_args(sys.argv[sys.argv.index("--") + 1 :])

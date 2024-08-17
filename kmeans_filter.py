@@ -8,7 +8,8 @@ import faiss
 import platform
 import subprocess
 import os
-from tqdm import tqdm
+import shutil
+import tempfile
 
 LUMINANCE_COEFFS = np.array([0.2126, 0.7152, 0.0722])
 
@@ -306,79 +307,77 @@ def apply_cartoon_effect_v2(img_np):
     return img_cartoon
 
 
-def taylor_exp(x):
-    """Taylor series approximation of exp(x) up to the 3rd degree."""
-    return 1 + x + (x**2)/2 + (x**3)/6
+def apply_kuwahara_blender(
+    img_np, variation, use_high_precision, uniformity, sharpness, eccentricity
+):
+    """Apply the anisotropic Kuwahara filter using Blender."""
+    print("Applying Anisotropic Kuwahara Filter ...")
 
-def gaussian(x, sigma):
-    """Gaussian function with Taylor series approximation for the exponential."""
-    taylor_x = -(x ** 2) / (2 * sigma ** 2)
-    return taylor_exp(taylor_x) / (np.sqrt(2 * np.pi) * sigma)
+    # Create a temporary directory for Blender processing
+    with tempfile.TemporaryDirectory() as temp_dir:
+        input_image_path = os.path.join(temp_dir, "input_temp.png")
+        output_image_path = os.path.join(temp_dir, "input_temp_kuwahara.png")
 
-def compute_structure_tensor(image):
-    # Convert to grayscale if the image is multi-channel (RGB)
-    if len(image.shape) == 3:
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    
-    Sx = cv2.Sobel(image, cv2.CV_64F, 1, 0, ksize=3)
-    Sy = cv2.Sobel(image, cv2.CV_64F, 0, 1, ksize=3)
-    Sxx = Sx * Sx
-    Syy = Sy * Sy
-    Sxy = Sx * Sy
-    return Sxx, Syy, Sxy
+        # Save the current img_np as a temporary PNG file
+        cv2.imwrite(input_image_path, img_np)
 
-def anisotropic_kuwahara_filter(image, kernel_size=5, alpha=1.0, blur_radius=2, zero_crossing=0.58):
-    height, width = image.shape[:2]
-    
-    # Compute structure tensor
-    Sxx, Syy, Sxy = compute_structure_tensor(image)
-    
-    # Gaussian blur the structure tensor
-    Sxx_blur = cv2.GaussianBlur(Sxx, (blur_radius*2+1, blur_radius*2+1), 0)
-    Syy_blur = cv2.GaussianBlur(Syy, (blur_radius*2+1, blur_radius*2+1), 0)
-    Sxy_blur = cv2.GaussianBlur(Sxy, (blur_radius*2+1, blur_radius*2+1), 0)
-    
-    # Compute anisotropy
-    lambda1 = 0.5 * (Sxx_blur + Syy_blur + np.sqrt((Sxx_blur - Syy_blur) ** 2 + 4 * Sxy_blur ** 2))
-    lambda2 = 0.5 * (Sxx_blur + Syy_blur - np.sqrt((Sxx_blur - Syy_blur) ** 2 + 4 * Sxy_blur ** 2))
-    
-    with np.errstate(divide='ignore', invalid='ignore'):
-        A = np.divide(lambda1 - lambda2, lambda1 + lambda2, where=(lambda1 + lambda2) != 0)
-        A = np.nan_to_num(A, nan=0.0)
+        # Check if Blender is in PATH
+        blender_executable = shutil.which("blender")
+        if blender_executable is None:
+            os_type = platform.system()
+            print(
+                "Blender is not found in your PATH. Please add Blender to your PATH environment variable."
+            )
+            if os_type == "Darwin":  # macOS
+                print("For macOS, add the following to your .zshrc or .bash_profile:")
+                print('export PATH="/Applications/Blender.app/Contents/MacOS:$PATH"')
+            elif os_type == "Windows":  # Windows
+                print(
+                    "For Windows, add Blender's directory to your PATH via System Properties."
+                )
+            elif os_type == "Linux":  # Linux
+                print("For Linux, add the following to your ~/.bashrc or ~/.zshrc:")
+                print('export PATH="/path/to/blender:$PATH"')
+                print(
+                    "Replace '/path/to/blender' with the actual path to Blender's executable."
+                )
+            return None
 
-    phi = 0.5 * np.arctan2(2 * Sxy_blur, Sxx_blur - Syy_blur)
-    
-    result = np.zeros_like(image, dtype=np.float64)
-    
-    max_radius = kernel_size // 2
-    y_indices, x_indices = np.meshgrid(np.arange(-max_radius, max_radius + 1), np.arange(-max_radius, max_radius + 1), indexing='ij')
-    v = np.stack([y_indices.ravel(), x_indices.ravel()], axis=-1)
+        # Construct the Blender command
+        blender_command = [
+            blender_executable,
+            "--background",
+            "--python",
+            "blender_kuwahara.py",
+            "--",
+            input_image_path,
+            "--variation",
+            variation,
+            "--uniformity",
+            str(uniformity),
+            "--sharpness",
+            str(sharpness),
+            "--eccentricity",
+            str(eccentricity),
+        ]
 
-    for y in tqdm(range(height), desc="Applying Anisotropic Kuwahara Filter"):
-        for x in range(width):
-            phi_value = phi[y, x]
-            cos_phi = np.cos(phi_value)
-            sin_phi = np.sin(phi_value)
-            R = np.array([[cos_phi, -sin_phi], [sin_phi, cos_phi]])
-            
-            A_value = A[y, x]
-            a = max_radius * np.clip((alpha + A_value) / alpha, 0.1, 2.0)
-            b = max_radius * np.clip(alpha / (alpha + A_value), 0.1, 2.0)
-            
-            S = np.array([[0.5 / a, 0], [0, 0.5 / b]])
-            SR = S @ R
+        if use_high_precision:
+            blender_command.append("--use_high_precision")
 
-            v_transformed = np.dot(v, SR.T)
-            inside_mask = np.linalg.norm(v_transformed, axis=1) <= 0.5
-            
-            y_offsets = np.clip(y + y_indices.ravel()[inside_mask], 0, height - 1)
-            x_offsets = np.clip(x + x_indices.ravel()[inside_mask], 0, width - 1)
+        # Run Blender to apply the filter
+        try:
+            subprocess.run(blender_command, check=True)
+        except subprocess.CalledProcessError as e:
+            print(f"Blender process failed with error: {e}")
+            return None
 
-            region_values = image[y_offsets, x_offsets]
-            mean_value = np.mean(region_values, axis=0)
-            result[y, x] = mean_value
-    
-    return np.clip(result, 0, 255).astype(np.uint8)
+        # Load the processed image from Blender
+        img_np = cv2.imread(output_image_path)
+        if img_np is None:
+            print(f"Failed to load the output image from Blender: {output_image_path}")
+            return None
+
+        return img_np
 
 
 def main(
@@ -394,14 +393,16 @@ def main(
     engine="sklearn",
     gpu=False,
     n_init=1,
+    max_iter=1,
     smoothing_type=None,
     smoothing_strength=5,
     post_process=None,
     anisotropic_kuwahara=False,  # New argument to enable anisotropic Kuwahara filter
-    kuwahara_kernel_size=5,  # New argument for kernel size of anisotropic Kuwahara
-    kuwahara_alpha=1.0,  # New argument for alpha parameter of anisotropic Kuwahara
-    kuwahara_blur_radius=2,  # New argument for blur radius of anisotropic Kuwahara
-    kuwahara_zero_crossing=0.58,  # New argument for zero crossing of anisotropic Kuwahara
+    variation="ANISOTROPIC",  # Kuwahara filter variation
+    use_high_precision=False,  # High precision setting
+    uniformity=1,  # Uniformity setting
+    sharpness=0.5,  # Sharpness setting
+    eccentricity=1.0,  # Eccentricity setting
 ):
     # Sanity checks
     assert not (gpu and engine == "sklearn"), "Only faiss is compatible with gpu"
@@ -417,17 +418,6 @@ def main(
 
     if smoothing_type:
         img_np = apply_smoothing(img_np, smoothing_type, smoothing_strength)
-
-    # Apply Anisotropic Kuwahara Filter if enabled
-    if anisotropic_kuwahara:
-        print("Applying Anisotropic Kuwahara Filter ...")
-        img_np = anisotropic_kuwahara_filter(
-            img_np,
-            kernel_size=kuwahara_kernel_size,
-            alpha=kuwahara_alpha,
-            blur_radius=kuwahara_blur_radius,
-            zero_crossing=kuwahara_zero_crossing,
-        )
 
     # If output path is not specified, generate one
     if output_path is None:
@@ -449,8 +439,9 @@ def main(
         engine=engine,
         gpu=gpu,
         n_init=n_init,
+        max_iter=max_iter,
     )
-    result_np, nearest_colors_inds_orig = round_img_to_colors(img_np, top_k_colors)
+    img_np, nearest_colors_inds_orig = round_img_to_colors(img_np, top_k_colors)
     if ref_path is not None:
         print("K-means clustering reference image ...")
         top_k_colors_ref = get_topk_colors_kmeans(
@@ -461,27 +452,41 @@ def main(
             engine=engine,
             gpu=gpu,
             n_init=n_init,
+            max_iter=max_iter,
         )
-        result_np = swap_colors(
+        img_np = swap_colors(
             nearest_colors_inds_orig,
             top_k_colors,
             top_k_colors_ref,
             luminance_correction=luminance_correction,
         )
 
-    result_np = downsample_image(result_np, downsample_ratio)
+    img_np = downsample_image(img_np, downsample_ratio)
+
+    # Apply Anisotropic Kuwahara Filter if enabled
+    if anisotropic_kuwahara:
+        img_np = apply_kuwahara_blender(
+            img_np,
+            variation,
+            use_high_precision,
+            uniformity,
+            sharpness,
+            eccentricity,
+        )
+        if img_np is None:
+            return
 
     if post_process:
         if post_process == "bilateral":
-            result_np = apply_bilateral_filter(result_np)
+            img_np = apply_bilateral_filter(img_np)
         elif post_process == "median":
-            result_np = apply_median_filter(result_np)
+            img_np = apply_median_filter(img_np)
         elif post_process == "gaussian_edges":
-            result_np = apply_gaussian_blur_and_edges(result_np)
+            img_np = apply_gaussian_blur_and_edges(img_np)
         elif post_process == "cartoon":
-            result_np = apply_cartoon_effect(result_np)
+            img_np = apply_cartoon_effect(img_np)
         elif post_process == "cartoon2":
-            result_np = apply_cartoon_effect_v2(result_np)
+            img_np = apply_cartoon_effect_v2(img_np)
         else:
             raise ValueError(f"Unknown post-processing option: {post_process}")
 
@@ -490,7 +495,7 @@ def main(
         if output_path.endswith(".png")
         else output_path.replace(".exr", ".png")
     )
-    cv2.imwrite(output_png_path, result_np)
+    cv2.imwrite(output_png_path, img_np)
     print(f"Result saved to {output_png_path}")
 
     if input_is_exr:
@@ -505,7 +510,7 @@ def main(
             color_palette[0, :, :] = top_k_colors
         plot_filtered_and_original(
             img_np,
-            result_np,
+            img_np,
             color_palette,
             n_colors,
             ref_np,
@@ -555,14 +560,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--n_random",
         type=int,
-        default=1,
+        default=5,
         help="Number of different random seeds to start from for k-means clustering (increases time linearly).",
     )
 
     parser.add_argument(
         "--max_iter",
         type=int,
-        default=1,
+        default=5,
         help="Number of iterations to use for k-means clustering.",
     )
 
@@ -632,31 +637,37 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--kuwahara_kernel_size",
-        type=int,
-        default=5,
-        help="Kernel size for the anisotropic Kuwahara filter.",
+        "--variation",
+        type=str,
+        default="ANISOTROPIC",
+        help="Kuwahara filter variation, default is ANISOTROPIC.",
     )
 
     parser.add_argument(
-        "--kuwahara_alpha",
+        "--use_high_precision",
+        action="store_true",
+        help="Use high precision mode for the Kuwahara filter.",
+    )
+
+    parser.add_argument(
+        "--uniformity",
+        type=int,
+        default=1,
+        help="Uniformity of the Kuwahara filter.",
+    )
+
+    parser.add_argument(
+        "--sharpness",
+        type=float,
+        default=0.5,
+        help="Sharpness of the Kuwahara filter.",
+    )
+
+    parser.add_argument(
+        "--eccentricity",
         type=float,
         default=1.0,
-        help="Alpha parameter for the anisotropic Kuwahara filter.",
-    )
-
-    parser.add_argument(
-        "--kuwahara_blur_radius",
-        type=int,
-        default=2,
-        help="Blur radius for the anisotropic Kuwahara filter.",
-    )
-
-    parser.add_argument(
-        "--kuwahara_zero_crossing",
-        type=float,
-        default=0.58,
-        help="Zero crossing parameter for the anisotropic Kuwahara filter.",
+        help="Eccentricity of the Kuwahara filter.",
     )
 
     args = parser.parse_args()
@@ -674,12 +685,14 @@ if __name__ == "__main__":
         engine=args.engine,
         gpu=args.gpu,
         n_init=args.n_random,
+        max_iter=args.max_iter,
         smoothing_type=args.smoothing_type,
         smoothing_strength=args.smoothing_strength,
         post_process=args.post_process,
         anisotropic_kuwahara=args.anisotropic_kuwahara,
-        kuwahara_kernel_size=args.kuwahara_kernel_size,
-        kuwahara_alpha=args.kuwahara_alpha,
-        kuwahara_blur_radius=args.kuwahara_blur_radius,
-        kuwahara_zero_crossing=args.kuwahara_zero_crossing,
+        variation=args.variation,
+        use_high_precision=args.use_high_precision,
+        uniformity=args.uniformity,
+        sharpness=args.sharpness,
+        eccentricity=args.eccentricity,
     )
