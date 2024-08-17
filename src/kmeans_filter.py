@@ -7,6 +7,13 @@ from filters import *
 from color_quantization import *
 
 
+def adjust_saturation(img_np, saturation_factor):
+    """Increase the color saturation of an image."""
+    hsv_img = cv2.cvtColor(img_np, cv2.COLOR_BGR2HSV)
+    hsv_img[..., 1] = np.clip(hsv_img[..., 1] * saturation_factor, 0, 255)
+    return cv2.cvtColor(hsv_img, cv2.COLOR_HSV2BGR)
+
+
 def main(
     input_path,
     output_path=None,
@@ -30,6 +37,7 @@ def main(
     uniformity=1,  # Uniformity setting
     sharpness=0.5,  # Sharpness setting
     eccentricity=1.0,  # Eccentricity setting
+    saturation_factor=1.0,  # Saturation adjustment factor
 ):
     # Sanity checks
     assert not (gpu and engine == "sklearn"), "Only faiss is compatible with gpu"
@@ -103,6 +111,7 @@ def main(
         if img_np is None:
             return
 
+    # Apply post-processing effects
     if post_process:
         if post_process == "bilateral":
             img_np = apply_bilateral_filter(img_np)
@@ -116,6 +125,10 @@ def main(
             img_np = apply_cartoon_effect_v2(img_np)
         else:
             raise ValueError(f"Unknown post-processing option: {post_process}")
+
+    # Adjust saturation if a saturation factor is specified
+    if saturation_factor != 1.0:
+        img_np = adjust_saturation(img_np, saturation_factor)
 
     output_png_path = (
         output_path
@@ -151,6 +164,7 @@ if __name__ == "__main__":
         description="Perform color reduction using k-means clustering."
     )
 
+    # Existing arguments...
     parser.add_argument(
         "-i",
         "--input_path",
@@ -297,6 +311,13 @@ if __name__ == "__main__":
         help="Eccentricity of the Kuwahara filter.",
     )
 
+    parser.add_argument(
+        "--saturation_factor",
+        type=float,
+        default=1.0,
+        help="Factor to increase the color saturation. Default is 1.0 (no change).",
+    )
+
     args = parser.parse_args()
 
     main(
@@ -322,4 +343,5 @@ if __name__ == "__main__":
         uniformity=args.uniformity,
         sharpness=args.sharpness,
         eccentricity=args.eccentricity,
+        saturation_factor=args.saturation_factor,
     )
