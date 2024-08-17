@@ -1,106 +1,49 @@
-import cv2
 import numpy as np
-import platform
-import subprocess
+import os
 import argparse
+import cv2
+from utils import load_image, convert_exr_to_png, convert_png_to_exr
+from normal_map_fns.detect_flat import detect_flat_areas_by_variance
+from normal_map_fns.interpolation import apply_linear_smoothing
 
 
-def convert_exr_to_png(exr_path):
-    if platform.system() == "Darwin":  # Check if OS is macOS
-        png_path = exr_path.replace(".exr", ".png")
-        command = ["sips", "-s", "format", "png", exr_path, "--out", png_path]
-        try:
-            subprocess.run(command, check=True)
-            print(f"Converted {exr_path} to {png_path}")
-            return png_path
-        except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"Failed to convert EXR to PNG: {e}")
-    else:
-        raise NotImplementedError("EXR format is only supported on macOS using sips.")
+def apply_mask(original_img, smoothed_img, mask):
+    """Applies the mask to preserve flat areas in the original image."""
+    combined_img = np.where(mask[..., None], original_img, smoothed_img)
+    return combined_img
 
 
-def convert_png_to_exr(png_path):
-    if platform.system() == "Darwin":  # Check if OS is macOS
-        exr_path = png_path.replace(".png", ".exr")
-        command = ["sips", "-s", "format", "exr", png_path, "--out", exr_path]
-        try:
-            subprocess.run(command, check=True)
-            print(f"Converted {png_path} to {exr_path}")
-            return exr_path
-        except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"Failed to convert PNG to EXR: {e}")
-    else:
-        raise NotImplementedError(
-            "PNG to EXR conversion is only supported on macOS using sips."
-        )
-
-
-def load_image(input_path):
-    if input_path.endswith(".exr"):
-        input_path = convert_exr_to_png(input_path)
-    img_np = cv2.imread(input_path, cv2.IMREAD_UNCHANGED)
-    if img_np is None:
-        raise ValueError(f"Failed to load image from {input_path}")
-
-    # If the image has more than 3 channels, select the first 3 (this is common for EXR with alpha)
-    if img_np.shape[2] > 3:
-        img_np = img_np[:, :, :3]
-
-    return img_np, input_path
-
-
-def apply_aggressive_bilateral_filter(
-    img_np, d=15, sigma_color=100, sigma_space=100, iterations=5
-):
-    for i in range(iterations):
-        img_np = cv2.bilateralFilter(img_np, d, sigma_color, sigma_space)
-    return img_np
-
-
-def apply_aggressive_gaussian_blur(img_np, ksize=25, sigma=10):
-    # Ensure the image is in 8-bit format for Gaussian blur
-    if img_np.dtype != np.uint8:
-        img_np = cv2.normalize(img_np, None, 0, 255, cv2.NORM_MINMAX)
-        img_np = np.uint8(img_np)
-
-    return cv2.GaussianBlur(img_np, (ksize, ksize), sigma)
-
-
-def apply_downscale_upscale_to_normal_map(img_np, scale_factor=0.2):
-    height, width = img_np.shape[:2]
-    small_img = cv2.resize(
-        img_np,
-        (int(width * scale_factor), int(height * scale_factor)),
-        interpolation=cv2.INTER_LINEAR,
-    )
-    return cv2.resize(small_img, (width, height), interpolation=cv2.INTER_LINEAR)
-
-
-def stylize_normal_map(input_path, output_path, method="bilateral"):
-    # Load the normal map
+def stylize_normal_map(input_path, method="linear", preserve_flat_areas=False):
     img_np, converted_input_path = load_image(input_path)
     input_is_exr = input_path.endswith(".exr")
 
-    # Apply the chosen stylization method
-    if method == "bilateral":
-        img_stylized = apply_aggressive_bilateral_filter(img_np)
-    elif method == "gaussian":
-        img_stylized = apply_aggressive_gaussian_blur(img_np)
-    elif method == "downscale_upscale":
-        img_stylized = apply_downscale_upscale_to_normal_map(img_np)
-    else:
-        raise ValueError(f"Unknown method: {method}")
+    # Step 2: Detect flat areas if requested using neighborhood variance
+    flat_areas_mask = None
+    if preserve_flat_areas:
+        flat_areas_mask = detect_flat_areas_by_variance(img_np)
+        flat_areas_mask = ~flat_areas_mask
 
-    # Save the stylized normal map
+    # Step 3: Apply smoothing to a copy of the image
+    smoothed_img = apply_linear_smoothing(img_np)
+
+    # Step 4: Combine the original and smoothed images using the mask
+    if flat_areas_mask is not None:
+        combined_img = apply_mask(img_np, smoothed_img, flat_areas_mask)
+    else:
+        combined_img = smoothed_img
+
+    # Step 5: Save the result
+    base_name, ext = os.path.splitext(input_path)
+    output_path = f"{base_name}_slerp{ext}"
+
     output_png_path = (
         output_path
         if output_path.endswith(".png")
         else output_path.replace(".exr", ".png")
     )
-    cv2.imwrite(output_png_path, img_stylized)
+    cv2.imwrite(output_png_path, combined_img)
     print(f"Stylized normal map saved to {output_png_path}")
 
-    # Convert back to EXR if necessary
     if input_is_exr:
         output_path = convert_png_to_exr(output_png_path)
 
@@ -116,21 +59,25 @@ if __name__ == "__main__":
         required=True,
         help="Path to the input normal map.",
     )
-    parser.add_argument(
-        "-o",
-        "--output_path",
-        type=str,
-        required=True,
-        help="Path to save the stylized normal map.",
-    )
+
     parser.add_argument(
         "--method",
         type=str,
-        choices=["bilateral", "gaussian", "downscale_upscale"],
-        default="bilateral",
-        help="Method to use for stylization: 'bilateral', 'gaussian', or 'downscale_upscale'.",
+        choices=["linear"],
+        default="linear",
+        help="Method to use for stylization: 'linear'.",
+    )
+
+    parser.add_argument(
+        "--preserve-rough-areas",
+        action="store_true",
+        help="Preserve rough areas (non-blue regions) in the normal map during smoothing.",
     )
 
     args = parser.parse_args()
 
-    stylize_normal_map(args.input_path, args.output_path, method=args.method)
+    stylize_normal_map(
+        args.input_path,
+        method=args.method,
+        preserve_flat_areas=args.preserve_flat_areas,
+    )
